@@ -67,14 +67,14 @@ def cleanup_memory():
 
 @app.on_event("startup")
 async def load_model():
-    """Load a smaller model on startup"""
+    """Load a very small and efficient model"""
     global model, tokenizer
     
     try:
-        logger.info("Loading Microsoft Phi-1 model...")
+        logger.info("Loading TinyLlama model...")
         
-        # Use the smallest Phi model
-        model_name = "microsoft/phi-1"
+        # Use TinyLlama - very small and efficient
+        model_name = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
         tokenizer = AutoTokenizer.from_pretrained(model_name)
         model = AutoModelForCausalLM.from_pretrained(
             model_name,
@@ -83,7 +83,7 @@ async def load_model():
             device_map="cpu"
         )
         
-        logger.info("Microsoft Phi-1 model loaded successfully!")
+        logger.info("TinyLlama model loaded successfully!")
         
     except Exception as e:
         logger.error(f"Failed to load model: {str(e)}")
@@ -94,7 +94,7 @@ async def root():
     """Root endpoint"""
     return {
         "message": "CCC AI Server is running!",
-        "model": "Microsoft Phi-1",
+        "model": "TinyLlama-1.1B-Chat",
         "endpoints": {
             "health": "/health",
             "generate": "/generate-component"
@@ -107,7 +107,7 @@ async def health_check():
     return {
         "status": "healthy",
         "model_loaded": model is not None,
-        "model_name": "microsoft/phi-1"
+        "model_name": "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
     }
 
 @app.post("/generate-component", response_model=ComponentResponse)
@@ -121,12 +121,11 @@ async def generate_component(request: ComponentRequest):
         logger.info(f"Generating component for prompt: {request.prompt}")
         
         # Create system prompt
-        system_prompt = f"""
-Generate a WordPress component based on: {request.prompt}
+        system_prompt = f"""<|system|>
+You are a WordPress component generator. Create a component based on the user's request.
+Available field types: {', '.join(request.available_fields)}
 
-Available fields: {', '.join(request.available_fields)}
-
-Return JSON:
+Return only valid JSON in this format:
 {{
     "component": {{
         "name": "Component Name",
@@ -143,7 +142,11 @@ Return JSON:
         }}
     ]
 }}
-"""
+</s>
+<|user|>
+{request.prompt}
+</s>
+<|assistant|>"""
 
         # Generate response
         inputs = tokenizer(system_prompt, return_tensors="pt", max_length=256, truncation=True)

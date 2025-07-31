@@ -1,12 +1,12 @@
-# Use Alpine Linux for smaller base image
-FROM python:3.9-alpine as builder
+# Use Ubuntu slim for better PyTorch compatibility
+FROM python:3.9-slim as builder
 
 # Install build dependencies
-RUN apk add --no-cache \
+RUN apt-get update && apt-get install -y \
     gcc \
-    musl-dev \
-    libffi-dev \
-    git
+    g++ \
+    git \
+    && rm -rf /var/lib/apt/lists/*
 
 # Set working directory
 WORKDIR /app
@@ -18,12 +18,12 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
 
 # Final stage
-FROM python:3.9-alpine
+FROM python:3.9-slim
 
 # Install runtime dependencies
-RUN apk add --no-cache \
+RUN apt-get update && apt-get install -y \
     curl \
-    && rm -rf /var/cache/apk/*
+    && rm -rf /var/lib/apt/lists/*
 
 # Copy installed packages
 COPY --from=builder /install /usr/local
@@ -38,13 +38,12 @@ COPY . .
 RUN mkdir -p /app/.cache/huggingface/hub
 
 # Create user
-RUN adduser -D app && chown -R app:app /app
+RUN useradd --create-home --shell /bin/bash app && chown -R app:app /app
 USER app
 
 # Set environment variables
 ENV TRANSFORMERS_CACHE=/app/.cache/huggingface/hub
 ENV HF_HOME=/app/.cache/huggingface/hub
-ENV PYTORCH_ENABLE_MPS_FALLBACK=1
 ENV PYTHONUNBUFFERED=1
 
 # Expose port
