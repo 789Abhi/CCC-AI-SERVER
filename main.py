@@ -7,6 +7,7 @@ import json
 import logging
 from typing import List, Optional
 import os
+import gc
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -59,25 +60,34 @@ class ComponentResponse(BaseModel):
     success: bool = True
     message: str = "Component generated successfully"
 
+def cleanup_gpu_memory():
+    """Clean up GPU memory after generation"""
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    gc.collect()
+
 @app.on_event("startup")
 async def load_model():
-    """Load the Microsoft Phi-2 model on startup"""
+    """Load the Microsoft Phi-1.5 model on startup"""
     global model, tokenizer
     
     try:
-        logger.info("Loading Microsoft Phi-2 model...")
+        logger.info("Loading Microsoft Phi-1.5 model...")
         
         # Load tokenizer and model
-        model_name = "microsoft/phi-2"
+        model_name = "microsoft/phi-1_5"
         tokenizer = AutoTokenizer.from_pretrained(model_name)
         model = AutoModelForCausalLM.from_pretrained(
             model_name,
-            torch_dtype=torch.float16,
-            device_map="auto",
-            trust_remote_code=True
+            torch_dtype=torch.float32,  # Use float32 for CPU
+            low_cpu_mem_usage=True,
+            device_map="auto"
         )
         
-        logger.info("Microsoft Phi-2 model loaded successfully!")
+        # Move model to CPU to save memory
+        model = model.to("cpu")
+        
+        logger.info("Microsoft Phi-1.5 model loaded successfully!")
         
     except Exception as e:
         logger.error(f"Failed to load model: {str(e)}")
@@ -88,7 +98,7 @@ async def root():
     """Root endpoint"""
     return {
         "message": "CCC AI Server is running!",
-        "model": "Microsoft Phi-2",
+        "model": "Microsoft Phi-1.5",
         "endpoints": {
             "health": "/health",
             "generate": "/generate-component"
@@ -101,7 +111,7 @@ async def health_check():
     return {
         "status": "healthy",
         "model_loaded": model is not None,
-        "model_name": "microsoft/phi-2"
+        "model_name": "microsoft/phi-1_5"
     }
 
 @app.post("/generate-component", response_model=ComponentResponse)
@@ -151,18 +161,22 @@ Rules:
 """
 
         # Generate response
-        inputs = tokenizer(system_prompt, return_tensors="pt", max_length=1024, truncation=True)
+        inputs = tokenizer(system_prompt, return_tensors="pt", max_length=512, truncation=True)
         
         with torch.no_grad():
             outputs = model.generate(
                 **inputs,
-                max_length=1500,
+                max_length=1000,
                 temperature=0.7,
                 do_sample=True,
-                pad_token_id=tokenizer.eos_token_id
+                pad_token_id=tokenizer.eos_token_id,
+                num_return_sequences=1
             )
         
         response_text = tokenizer.decode(outputs[0], skip_special_tokens=True)
+        
+        # Clean up memory
+        cleanup_gpu_memory()
         
         # Extract JSON from response
         json_start = response_text.find('{')
@@ -213,6 +227,10 @@ Rules:
     except Exception as e:
         logger.error(f"Error generating component: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to generate component: {str(e)}")
+    
+    finally:
+        # Always clean up memory
+        cleanup_gpu_memory()
 
 @app.get("/test")
 async def test_generation():
