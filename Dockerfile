@@ -1,49 +1,51 @@
-# Use multi-stage build
-FROM python:3.9-slim as builder
+# Use Alpine Linux for smaller base image
+FROM python:3.9-alpine as builder
+
+# Install build dependencies
+RUN apk add --no-cache \
+    gcc \
+    musl-dev \
+    libffi-dev \
+    git
 
 # Set working directory
 WORKDIR /app
 
-# Install build dependencies
-RUN apt-get update && apt-get install -y \
-    git \
-    && rm -rf /var/lib/apt/lists/*
-
-# Copy requirements first for better caching
+# Copy requirements
 COPY requirements.txt .
 
-# Install dependencies into /install directory
+# Install dependencies
 RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
 
-# Start fresh with a clean image
-FROM python:3.9-slim
+# Final stage
+FROM python:3.9-alpine
 
-# Copy installed packages from builder
+# Install runtime dependencies
+RUN apk add --no-cache \
+    curl \
+    && rm -rf /var/cache/apk/*
+
+# Copy installed packages
 COPY --from=builder /install /usr/local
 
 # Set working directory
 WORKDIR /app
 
-# Install runtime dependencies
-RUN apt-get update && apt-get install -y \
-    curl \
-    && rm -rf /var/lib/apt/lists/*
-
 # Copy application code
 COPY . .
 
-# Create cache directory for transformers
+# Create cache directory
 RUN mkdir -p /app/.cache/huggingface/hub
 
-# Create a non-root user
-RUN useradd --create-home --shell /bin/bash app \
-    && chown -R app:app /app
+# Create user
+RUN adduser -D app && chown -R app:app /app
 USER app
 
 # Set environment variables
 ENV TRANSFORMERS_CACHE=/app/.cache/huggingface/hub
 ENV HF_HOME=/app/.cache/huggingface/hub
 ENV PYTORCH_ENABLE_MPS_FALLBACK=1
+ENV PYTHONUNBUFFERED=1
 
 # Expose port
 EXPOSE 8000
@@ -52,5 +54,5 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=30s --start-period=60s --retries=3 \
     CMD curl -f http://localhost:8000/health || exit 1
 
-# Start the application
+# Start application
 CMD ["python", "main.py"] 

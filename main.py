@@ -19,20 +19,20 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# Add CORS middleware to allow requests from WordPress sites
+# Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # In production, specify your WordPress domains
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Global variables for model and tokenizer
+# Global variables
 model = None
 tokenizer = None
 
-# Pydantic models for request/response
+# Pydantic models
 class ComponentRequest(BaseModel):
     prompt: str
     available_fields: Optional[List[str]] = [
@@ -56,38 +56,34 @@ class Component(BaseModel):
 class ComponentResponse(BaseModel):
     component: Component
     fields: List[Field]
-    template: Optional[dict] = None
     success: bool = True
     message: str = "Component generated successfully"
 
-def cleanup_gpu_memory():
-    """Clean up GPU memory after generation"""
+def cleanup_memory():
+    """Clean up memory after generation"""
+    gc.collect()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
-    gc.collect()
 
 @app.on_event("startup")
 async def load_model():
-    """Load the Microsoft Phi-1.5 model on startup"""
+    """Load a smaller model on startup"""
     global model, tokenizer
     
     try:
-        logger.info("Loading Microsoft Phi-1.5 model...")
+        logger.info("Loading Microsoft Phi-1 model...")
         
-        # Load tokenizer and model
-        model_name = "microsoft/phi-1_5"
+        # Use the smallest Phi model
+        model_name = "microsoft/phi-1"
         tokenizer = AutoTokenizer.from_pretrained(model_name)
         model = AutoModelForCausalLM.from_pretrained(
             model_name,
-            torch_dtype=torch.float32,  # Use float32 for CPU
+            torch_dtype=torch.float32,
             low_cpu_mem_usage=True,
-            device_map="auto"
+            device_map="cpu"
         )
         
-        # Move model to CPU to save memory
-        model = model.to("cpu")
-        
-        logger.info("Microsoft Phi-1.5 model loaded successfully!")
+        logger.info("Microsoft Phi-1 model loaded successfully!")
         
     except Exception as e:
         logger.error(f"Failed to load model: {str(e)}")
@@ -98,7 +94,7 @@ async def root():
     """Root endpoint"""
     return {
         "message": "CCC AI Server is running!",
-        "model": "Microsoft Phi-1.5",
+        "model": "Microsoft Phi-1",
         "endpoints": {
             "health": "/health",
             "generate": "/generate-component"
@@ -111,7 +107,7 @@ async def health_check():
     return {
         "status": "healthy",
         "model_loaded": model is not None,
-        "model_name": "microsoft/phi-1_5"
+        "model_name": "microsoft/phi-1"
     }
 
 @app.post("/generate-component", response_model=ComponentResponse)
@@ -126,18 +122,16 @@ async def generate_component(request: ComponentRequest):
         
         # Create system prompt
         system_prompt = f"""
-You are a WordPress component generator. Based on the user's description, generate a component structure.
+Generate a WordPress component based on: {request.prompt}
 
-User Request: {request.prompt}
+Available fields: {', '.join(request.available_fields)}
 
-Available field types: {', '.join(request.available_fields)}
-
-Generate a JSON response with this exact structure:
+Return JSON:
 {{
     "component": {{
         "name": "Component Name",
         "handle": "component_handle",
-        "description": "Component description"
+        "description": "Description"
     }},
     "fields": [
         {{
@@ -145,28 +139,19 @@ Generate a JSON response with this exact structure:
             "name": "field_name",
             "type": "field_type",
             "required": true/false,
-            "placeholder": "Placeholder text",
-            "config": {{}}
+            "placeholder": "Placeholder"
         }}
     ]
 }}
-
-Rules:
-- Use only the available field types
-- Create meaningful field names and labels
-- Make important fields required
-- Use appropriate field types for the content
-- Keep component names descriptive
-- Use kebab-case for handles
 """
 
         # Generate response
-        inputs = tokenizer(system_prompt, return_tensors="pt", max_length=512, truncation=True)
+        inputs = tokenizer(system_prompt, return_tensors="pt", max_length=256, truncation=True)
         
         with torch.no_grad():
             outputs = model.generate(
                 **inputs,
-                max_length=1000,
+                max_length=512,
                 temperature=0.7,
                 do_sample=True,
                 pad_token_id=tokenizer.eos_token_id,
@@ -176,7 +161,7 @@ Rules:
         response_text = tokenizer.decode(outputs[0], skip_special_tokens=True)
         
         # Clean up memory
-        cleanup_gpu_memory()
+        cleanup_memory()
         
         # Extract JSON from response
         json_start = response_text.find('{')
@@ -188,11 +173,10 @@ Rules:
         json_str = response_text[json_start:json_end]
         result = json.loads(json_str)
         
-        # Validate and structure the response
+        # Create response
         component_data = result.get("component", {})
         fields_data = result.get("fields", [])
         
-        # Create response
         component = Component(
             name=component_data.get("name", "Generated Component"),
             handle=component_data.get("handle", "generated_component"),
@@ -229,12 +213,11 @@ Rules:
         raise HTTPException(status_code=500, detail=f"Failed to generate component: {str(e)}")
     
     finally:
-        # Always clean up memory
-        cleanup_gpu_memory()
+        cleanup_memory()
 
 @app.get("/test")
 async def test_generation():
-    """Test endpoint with a sample prompt"""
+    """Test endpoint"""
     test_request = ComponentRequest(
         prompt="Create a hero section with video background and heading"
     )
