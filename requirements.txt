@@ -5,4 +5,5 @@ torch==2.1.1
 accelerate==0.24.1
 protobuf==4.25.1
 numpy==1.24.3
-pydantic==2.5.0 
+pydantic==2.5.0
+requests==2.31.0 
