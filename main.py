@@ -72,19 +72,19 @@ async def load_model():
     
     try:
         logger.info("Loading TinyLlama model...")
-        
         # Use TinyLlama - very small and efficient
         model_name = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
-        tokenizer = AutoTokenizer.from_pretrained(model_name)
+        # Use HuggingFace cache dir or default
+        cache_dir = os.environ.get("HF_HOME", None)
+        tokenizer = AutoTokenizer.from_pretrained(model_name, cache_dir=cache_dir)
         model = AutoModelForCausalLM.from_pretrained(
             model_name,
             torch_dtype=torch.float32,
             low_cpu_mem_usage=True,
-            device_map="cpu"
+            device_map="cpu",
+            cache_dir=cache_dir
         )
-        
         logger.info("TinyLlama model loaded successfully!")
-        
     except Exception as e:
         logger.error(f"Failed to load model: {str(e)}")
         raise e
