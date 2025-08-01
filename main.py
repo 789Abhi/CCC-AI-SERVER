@@ -71,20 +71,16 @@ async def load_model():
     global model, tokenizer
     
     try:
-        logger.info("Loading TinyLlama model...")
-        # Use TinyLlama - very small and efficient
-        model_name = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
-        # Use HuggingFace cache dir or default
+        logger.info("Loading distilgpt2 model...")
+        model_name = "distilgpt2"
         cache_dir = os.environ.get("HF_HOME", None)
         tokenizer = AutoTokenizer.from_pretrained(model_name, cache_dir=cache_dir)
         model = AutoModelForCausalLM.from_pretrained(
             model_name,
-            torch_dtype=torch.float32,
-            low_cpu_mem_usage=True,
-            device_map="cpu",
-            cache_dir=cache_dir
+            cache_dir=cache_dir,
+            device_map="cpu"
         )
-        logger.info("TinyLlama model loaded successfully!")
+        logger.info("distilgpt2 model loaded successfully!")
     except Exception as e:
         logger.error(f"Failed to load model: {str(e)}")
         raise e
@@ -94,7 +90,7 @@ async def root():
     """Root endpoint"""
     return {
         "message": "CCC AI Server is running!",
-        "model": "TinyLlama-1.1B-Chat",
+        "model": "distilgpt2",
         "endpoints": {
             "health": "/health",
             "generate": "/generate-component"
@@ -107,7 +103,7 @@ async def health_check():
     return {
         "status": "healthy",
         "model_loaded": model is not None,
-        "model_name": "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
+        "model_name": "distilgpt2"
     }
 
 @app.post("/generate-component", response_model=ComponentResponse)
