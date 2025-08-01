@@ -1,63 +1,80 @@
-from fastapi import FastAPI
-from pydantic import BaseModel
-from transformers import pipeline, set_seed
 import logging
+from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+import openai
 import json
-import re
+import os
+from dotenv import load_dotenv
 
-app = FastAPI()
+load_dotenv()
+openai.api_key = os.getenv("OPENAI_API_KEY")
 
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("main")
+app = FastAPI()
 
-generator = pipeline("text-generation", model="distilgpt2")
-set_seed(42)
+origins = ["*"]
+app.add_middleware(CORSMiddleware, allow_origins=origins, allow_credentials=True,
+                   allow_methods=["*"], allow_headers=["*"])
+
 
 class PromptRequest(BaseModel):
     prompt: str
 
-@app.get("/health")
-def health_check():
-    return {"status": "healthy", "model_loaded": True, "model_name": "distilgpt2"}
+
+def extract_json(text):
+    try:
+        # Find the first and last curly braces
+        start = text.find('{')
+        end = text.rfind('}') + 1
+        json_str = text[start:end]
+        return json.loads(json_str)
+    except Exception as e:
+        logging.error(f"JSON extraction error: {e}")
+        return None
+
 
 @app.post("/generate-component")
 async def generate_component(request: PromptRequest):
-    prompt = f"""
-Generate a React component schema in JSON format for the following task:
-
-{request.prompt}
-
-Format:
-{{
-  "componentName": "ComponentName",
-  "fields": [
-    {{
-      "name": "field1",
-      "type": "text"
-    }},
-    {{
-      "name": "field2",
-      "type": "password"
-    }}
-  ]
-}}
-
-Only return a valid JSON.
-"""
     try:
-        logger.info("Generating model output for prompt: %s", request.prompt)
-        output = generator(prompt, max_length=300, num_return_sequences=1)[0]['generated_text']
-        logger.info("Model output: %s", output)
+        system_message = {
+            "role": "system",
+            "content": (
+                "You are a helpful assistant that generates only valid JSON output for React components. "
+                "Respond with only JSON. Do not include explanations or extra text."
+            )
+        }
 
-        json_matches = re.findall(r'\{[\s\S]*\}', output)
-        for match in json_matches:
-            try:
-                parsed = json.loads(match)
-                return {"success": True, "component": parsed}
-            except json.JSONDecodeError:
-                continue
-        raise ValueError("No valid JSON object found in model output.")
+        user_message = {
+            "role": "user",
+            "content": (
+                f"{request.prompt}\n\n"
+                "Return only JSON in the following format:\n\n"
+                '{\n'
+                '  "componentName": "RegistrationForm",\n'
+                '  "fields": [\n'
+                '    {"name": "email", "type": "email"},\n'
+                '    {"name": "password", "type": "password"}\n'
+                '  ]\n'
+                '}'
+            )
+        }
+
+        response = openai.ChatCompletion.create(
+            model="gpt-3.5-turbo",
+            messages=[system_message, user_message],
+            temperature=0.2,
+        )
+
+        output = response['choices'][0]['message']['content']
+        logging.info(f"Model output:\n{output}")
+
+        extracted = extract_json(output)
+        if not extracted:
+            raise ValueError("No valid JSON object found in model output.")
+
+        return {"success": True, "data": extracted}
 
     except Exception as e:
-        logger.error("Error in generation: %s", e)
+        logging.error(f"Error in generation: {e}")
         return {"success": False, "error": str(e)}
