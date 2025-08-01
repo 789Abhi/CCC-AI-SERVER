@@ -101,6 +101,24 @@ def cleanup_memory():
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
 
+def validate_field_type(field_type: str, available_fields: List[str]) -> str:
+    """Validate and correct field types to use only available ones"""
+    if field_type not in available_fields:
+        # Map invalid types to valid ones
+        type_mapping = {
+            "number": "text",  # Numbers can be entered as text
+            "email": "text",   # Email can be entered as text
+            "url": "text",     # URL can be entered as text
+            "tel": "text",     # Phone can be entered as text
+            "date": "text",    # Date can be entered as text
+            "time": "text",    # Time can be entered as text
+            "datetime": "text", # DateTime can be entered as text
+            "file": "image",   # File upload maps to image
+            "attachment": "image", # Attachment maps to image
+        }
+        return type_mapping.get(field_type, "text")
+    return field_type
+
 def extract_json_from_text(text):
     """Extract and clean JSON from text response"""
     try:
@@ -119,10 +137,15 @@ def extract_json_from_text(text):
                 cleaned = re.sub(r',\s*}', '}', cleaned)  # Remove trailing commas
                 cleaned = re.sub(r',\s*]', ']', cleaned)  # Remove trailing commas in arrays
                 
+                # Try to parse the JSON
                 result = json.loads(cleaned)
+                
+                # Validate that it has the required structure
                 if "component" in result and "fields" in result:
+                    logger.info(f"Successfully parsed JSON: {result}")
                     return result
-            except json.JSONDecodeError:
+            except json.JSONDecodeError as e:
+                logger.warning(f"JSON decode error for match: {e}")
                 continue
                 
         return None
@@ -162,11 +185,23 @@ async def generate_component(request: ComponentRequest):
     try:
         logger.info(f"Generating component for prompt: {request.prompt}")
         
-        # Create a simpler, more direct prompt
+        # Create a smarter prompt that only uses available field types
         system_prompt = f"""<|system|>
 You are a WordPress component generator. Generate a JSON response for this component request.
 
-Available field types: {', '.join(request.available_fields)}
+ONLY use these available field types: {', '.join(request.available_fields)}
+
+Field type guidelines:
+- "text": Use for single line text (names, titles, prices, numbers, emails, URLs, etc.)
+- "textarea": Use for multi-line text (descriptions, content, lists, etc.)
+- "image": Use for image uploads
+- "video": Use for video uploads or video URLs
+- "color": Use for color pickers
+- "select": Use for dropdown choices (plan types, categories, etc.)
+- "checkbox": Use for true/false options
+- "radio": Use for single choice from multiple options
+- "wysiwyg": Use for rich text content with formatting
+- "repeater": Use for repeatable field groups (features list, testimonials, etc.)
 
 Return ONLY valid JSON in this exact format:
 {{
@@ -185,6 +220,8 @@ Return ONLY valid JSON in this exact format:
     }}
   ]
 }}
+
+IMPORTANT: Only use the field types listed above. For numbers, prices, emails, etc. use "text" type.
 </s>
 <|user|>
 {request.prompt}
@@ -200,7 +237,7 @@ Return ONLY valid JSON in this exact format:
         with torch.no_grad():
             outputs = model.generate(
                 **inputs,
-                max_length=600,
+                max_length=800,
                 temperature=0.3,
                 do_sample=True,
                 pad_token_id=tokenizer.eos_token_id,
@@ -243,9 +280,25 @@ Return ONLY valid JSON in this exact format:
                 ]
             }
         
+        # Validate and correct field types
+        fields_data = result.get("fields", [])
+        corrected_fields = []
+        
+        for field_data in fields_data:
+            original_type = field_data.get("type", "text")
+            corrected_type = validate_field_type(original_type, request.available_fields)
+            
+            if original_type != corrected_type:
+                logger.info(f"Corrected field type from '{original_type}' to '{corrected_type}' for field '{field_data.get('name', 'unknown')}'")
+            
+            corrected_field = {
+                **field_data,
+                "type": corrected_type
+            }
+            corrected_fields.append(corrected_field)
+        
         # Create response
         component_data = result.get("component", {})
-        fields_data = result.get("fields", [])
         
         component = Component(
             name=component_data.get("name", "Generated Component"),
@@ -254,7 +307,7 @@ Return ONLY valid JSON in this exact format:
         )
         
         fields = []
-        for field_data in fields_data:
+        for field_data in corrected_fields:
             field = Field(
                 label=field_data.get("label", "Field"),
                 name=field_data.get("name", "field"),
