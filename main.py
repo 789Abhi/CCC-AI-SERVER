@@ -19,7 +19,6 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -28,11 +27,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Global variables
 model = None
 tokenizer = None
 
-# Pydantic models
 class ComponentRequest(BaseModel):
     prompt: str
     available_fields: Optional[List[str]] = [
@@ -60,16 +57,13 @@ class ComponentResponse(BaseModel):
     message: str = "Component generated successfully"
 
 def cleanup_memory():
-    """Clean up memory after generation"""
     gc.collect()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
 
 @app.on_event("startup")
 async def load_model():
-    """Load a very small and efficient model"""
     global model, tokenizer
-    
     try:
         logger.info("Loading distilgpt2 model...")
         model_name = "distilgpt2"
@@ -87,7 +81,6 @@ async def load_model():
 
 @app.get("/")
 async def root():
-    """Root endpoint"""
     return {
         "message": "CCC AI Server is running!",
         "model": "distilgpt2",
@@ -99,7 +92,6 @@ async def root():
 
 @app.get("/health")
 async def health_check():
-    """Health check endpoint"""
     return {
         "status": "healthy",
         "model_loaded": model is not None,
@@ -118,7 +110,7 @@ async def generate_component(request: ComponentRequest):
 You are a WordPress component generator. Create a component based on the user's request.
 Available field types: {', '.join(request.available_fields)}
 
-Return only valid JSON in this format:
+Return ONLY valid JSON with no extra text or explanation in this format:
 {{
     "component": {{
         "name": "Component Name",
@@ -159,16 +151,17 @@ Return only valid JSON in this format:
         logger.info(f"Response text: {response_text}")
 
         cleanup_memory()
-        
-        json_start = response_text.find('{')
-        json_end = response_text.rfind('}') + 1
-        
-        if json_start == -1 or json_end == 0:
-            raise ValueError("No JSON found in AI response")
-        
-        json_str = response_text[json_start:json_end]
-        result = json.loads(json_str)
-        
+
+        # Extract JSON from response safely
+        try:
+            json_start = response_text.find('{')
+            json_end = response_text.rfind('}') + 1
+            json_str = response_text[json_start:json_end]
+            result = json.loads(json_str)
+        except json.JSONDecodeError as e:
+            logger.error(f"JSON parsing error: {str(e)}. Full response: {response_text}")
+            raise HTTPException(status_code=500, detail="Failed to parse AI response")
+
         component_data = result.get("component", {})
         fields_data = result.get("fields", [])
         
