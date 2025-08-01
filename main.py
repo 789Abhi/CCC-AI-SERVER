@@ -1,4 +1,5 @@
 import logging
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -14,10 +15,48 @@ import re
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Global variables for model and tokenizer
+model = None
+tokenizer = None
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Lifespan context manager for model loading"""
+    global model, tokenizer
+    
+    try:
+        logger.info("Loading TinyLlama model...")
+        
+        # Use TinyLlama - completely free and local
+        model_name = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
+        tokenizer = AutoTokenizer.from_pretrained(model_name)
+        model = AutoModelForCausalLM.from_pretrained(
+            model_name,
+            torch_dtype=torch.float32,
+            low_cpu_mem_usage=True,
+            device_map="cpu"
+        )
+        
+        logger.info("TinyLlama model loaded successfully!")
+        
+    except Exception as e:
+        logger.error(f"Failed to load model: {str(e)}")
+        raise e
+    
+    yield
+    
+    # Cleanup
+    if model is not None:
+        del model
+    if tokenizer is not None:
+        del tokenizer
+    gc.collect()
+
 app = FastAPI(
     title="CCC AI Server",
     description="AI-powered component generator for Custom Craft Component plugin",
-    version="1.0.0"
+    version="1.0.0",
+    lifespan=lifespan
 )
 
 # Add CORS middleware
@@ -28,10 +67,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# Global variables for model and tokenizer
-model = None
-tokenizer = None
 
 # Pydantic models
 class ComponentRequest(BaseModel):
@@ -94,30 +129,6 @@ def extract_json_from_text(text):
     except Exception as e:
         logger.error(f"JSON extraction error: {e}")
         return None
-
-@app.on_event("startup")
-async def load_model():
-    """Load a free local model on startup"""
-    global model, tokenizer
-    
-    try:
-        logger.info("Loading TinyLlama model...")
-        
-        # Use TinyLlama - completely free and local
-        model_name = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
-        tokenizer = AutoTokenizer.from_pretrained(model_name)
-        model = AutoModelForCausalLM.from_pretrained(
-            model_name,
-            torch_dtype=torch.float32,
-            low_cpu_mem_usage=True,
-            device_map="cpu"
-        )
-        
-        logger.info("TinyLlama model loaded successfully!")
-        
-    except Exception as e:
-        logger.error(f"Failed to load model: {str(e)}")
-        raise e
 
 @app.get("/")
 async def root():
