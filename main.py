@@ -108,15 +108,12 @@ async def health_check():
 
 @app.post("/generate-component", response_model=ComponentResponse)
 async def generate_component(request: ComponentRequest):
-    """Generate a component based on user prompt"""
-    
     if model is None or tokenizer is None:
         raise HTTPException(status_code=503, detail="AI model not loaded")
     
     try:
         logger.info(f"Generating component for prompt: {request.prompt}")
-        
-        # Create system prompt
+
         system_prompt = f"""<|system|>
 You are a WordPress component generator. Create a component based on the user's request.
 Available field types: {', '.join(request.available_fields)}
@@ -144,25 +141,25 @@ Return only valid JSON in this format:
 </s>
 <|assistant|>"""
 
-        # Generate response
         inputs = tokenizer(system_prompt, return_tensors="pt", max_length=256, truncation=True)
         
+        logger.info("Starting model.generate()")
         with torch.no_grad():
             outputs = model.generate(
                 **inputs,
-                max_length=512,
+                max_length=150,
                 temperature=0.7,
                 do_sample=True,
                 pad_token_id=tokenizer.eos_token_id,
                 num_return_sequences=1
             )
-        
+        logger.info("model.generate() completed")
+
         response_text = tokenizer.decode(outputs[0], skip_special_tokens=True)
-        
-        # Clean up memory
+        logger.info(f"Response text: {response_text}")
+
         cleanup_memory()
         
-        # Extract JSON from response
         json_start = response_text.find('{')
         json_end = response_text.rfind('}') + 1
         
@@ -172,7 +169,6 @@ Return only valid JSON in this format:
         json_str = response_text[json_start:json_end]
         result = json.loads(json_str)
         
-        # Create response
         component_data = result.get("component", {})
         fields_data = result.get("fields", [])
         
@@ -203,10 +199,6 @@ Return only valid JSON in this format:
             message="Component generated successfully"
         )
         
-    except json.JSONDecodeError as e:
-        logger.error(f"JSON parsing error: {str(e)}")
-        raise HTTPException(status_code=500, detail="Failed to parse AI response")
-        
     except Exception as e:
         logger.error(f"Error generating component: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to generate component: {str(e)}")
@@ -216,11 +208,9 @@ Return only valid JSON in this format:
 
 @app.get("/test")
 async def test_generation():
-    """Test endpoint"""
     test_request = ComponentRequest(
         prompt="Create a hero section with video background and heading"
     )
-    
     try:
         result = await generate_component(test_request)
         return {
@@ -236,4 +226,4 @@ async def test_generation():
 if __name__ == "__main__":
     import uvicorn
     port = int(os.environ.get("PORT", 8000))
-    uvicorn.run(app, host="0.0.0.0", port=port) 
+    uvicorn.run(app, host="0.0.0.0", port=port)
