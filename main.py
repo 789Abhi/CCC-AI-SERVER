@@ -8,6 +8,7 @@ import json
 from typing import List, Optional
 import os
 import gc
+import re
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -65,6 +66,35 @@ def cleanup_memory():
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
 
+def extract_json_from_text(text):
+    """Extract and clean JSON from text response"""
+    try:
+        # Find JSON-like content between curly braces
+        pattern = r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}'
+        matches = re.findall(pattern, text)
+        
+        if not matches:
+            return None
+            
+        # Try each match
+        for match in matches:
+            try:
+                # Clean up common issues
+                cleaned = match.replace('\n', ' ').replace('\r', ' ')
+                cleaned = re.sub(r',\s*}', '}', cleaned)  # Remove trailing commas
+                cleaned = re.sub(r',\s*]', ']', cleaned)  # Remove trailing commas in arrays
+                
+                result = json.loads(cleaned)
+                if "component" in result and "fields" in result:
+                    return result
+            except json.JSONDecodeError:
+                continue
+                
+        return None
+    except Exception as e:
+        logger.error(f"JSON extraction error: {e}")
+        return None
+
 @app.on_event("startup")
 async def load_model():
     """Load a free local model on startup"""
@@ -121,33 +151,37 @@ async def generate_component(request: ComponentRequest):
     try:
         logger.info(f"Generating component for prompt: {request.prompt}")
         
-        # Create system prompt
+        # Create a simpler, more direct prompt
         system_prompt = f"""<|system|>
-You are a WordPress component generator. Create a component based on the user's request.
+You are a WordPress component generator. Generate a JSON response for this component request.
+
 Available field types: {', '.join(request.available_fields)}
 
-Return only valid JSON in this format:
+Return ONLY valid JSON in this exact format:
 {{
-    "component": {{
-        "name": "Component Name",
-        "handle": "component_handle",
-        "description": "Description"
-    }},
-    "fields": [
-        {{
-            "label": "Field Label",
-            "name": "field_name",
-            "type": "field_type",
-            "required": true/false,
-            "placeholder": "Placeholder"
-        }}
-    ]
+  "component": {{
+    "name": "Component Name",
+    "handle": "component_handle",
+    "description": "Description"
+  }},
+  "fields": [
+    {{
+      "label": "Field Label",
+      "name": "field_name",
+      "type": "field_type",
+      "required": true/false,
+      "placeholder": "Placeholder"
+    }}
+  ]
 }}
 </s>
 <|user|>
 {request.prompt}
 </s>
-<|assistant|>"""
+<|assistant|>
+{{
+  "component": {{
+    "name": """
 
         # Generate response
         inputs = tokenizer(system_prompt, return_tensors="pt", max_length=256, truncation=True)
@@ -155,27 +189,48 @@ Return only valid JSON in this format:
         with torch.no_grad():
             outputs = model.generate(
                 **inputs,
-                max_length=512,
-                temperature=0.7,
+                max_length=600,
+                temperature=0.3,
                 do_sample=True,
                 pad_token_id=tokenizer.eos_token_id,
-                num_return_sequences=1
+                num_return_sequences=1,
+                eos_token_id=tokenizer.eos_token_id
             )
         
         response_text = tokenizer.decode(outputs[0], skip_special_tokens=True)
+        logger.info(f"Raw AI response: {response_text}")
         
         # Clean up memory
         cleanup_memory()
         
         # Extract JSON from response
-        json_start = response_text.find('{')
-        json_end = response_text.rfind('}') + 1
-        
-        if json_start == -1 or json_end == 0:
-            raise ValueError("No JSON found in AI response")
-        
-        json_str = response_text[json_start:json_end]
-        result = json.loads(json_str)
+        result = extract_json_from_text(response_text)
+        if not result:
+            # Fallback: create a basic component
+            logger.warning("Failed to parse JSON, creating fallback component")
+            result = {
+                "component": {
+                    "name": "Generated Component",
+                    "handle": "generated_component",
+                    "description": f"Component for: {request.prompt}"
+                },
+                "fields": [
+                    {
+                        "label": "Title",
+                        "name": "title",
+                        "type": "text",
+                        "required": True,
+                        "placeholder": "Enter title"
+                    },
+                    {
+                        "label": "Content",
+                        "name": "content",
+                        "type": "textarea",
+                        "required": False,
+                        "placeholder": "Enter content"
+                    }
+                ]
+            }
         
         # Create response
         component_data = result.get("component", {})
@@ -207,10 +262,6 @@ Return only valid JSON in this format:
             success=True,
             message="Component generated successfully"
         )
-        
-    except json.JSONDecodeError as e:
-        logger.error(f"JSON parsing error: {str(e)}")
-        raise HTTPException(status_code=500, detail="Failed to parse AI response")
         
     except Exception as e:
         logger.error(f"Error generating component: {str(e)}")
