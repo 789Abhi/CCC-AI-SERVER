@@ -11,7 +11,7 @@ WORKDIR /app
 # Copy application code
 COPY . .
 
-# Set environment variables for HuggingFace cache (model will be downloaded at runtime)
+# Set environment variables for HuggingFace cache
 ENV TRANSFORMERS_CACHE=/app/.cache/huggingface/hub
 ENV HF_HOME=/app/.cache/huggingface/hub
 ENV PYTHONUNBUFFERED=1
@@ -23,12 +23,12 @@ RUN pip install --no-cache-dir -r requirements.txt
 RUN useradd --create-home --shell /bin/bash app && chown -R app:app /app
 USER app
 
-# Expose port
+# Expose port (optional, just for info)
 EXPOSE 8000
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=30s --start-period=60s --retries=3 \
-    CMD curl -f http://localhost:8000/health || exit 1
+    CMD curl -f http://localhost:${PORT:-8000}/health || exit 1
 
-# Start application
-CMD ["python", "main.py"]
+# Start application with dynamic port
+CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}"]
