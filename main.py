@@ -6,10 +6,11 @@ from pydantic import BaseModel
 from transformers import AutoTokenizer, AutoModelForCausalLM
 import torch
 import json
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 import os
 import gc
 import re
+from cache_system import cache
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -25,10 +26,10 @@ async def lifespan(app: FastAPI):
     global model, tokenizer
     
     try:
-        logger.info("Loading TinyLlama model...")
+        logger.info("Loading optimized model...")
         
-        # Use TinyLlama - completely free and local
-        model_name = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
+        # Use a much smaller and faster model
+        model_name = "microsoft/DialoGPT-small"  # Much smaller than TinyLlama
         tokenizer = AutoTokenizer.from_pretrained(model_name)
         model = AutoModelForCausalLM.from_pretrained(
             model_name,
@@ -37,7 +38,11 @@ async def lifespan(app: FastAPI):
             device_map="cpu"
         )
         
-        logger.info("TinyLlama model loaded successfully!")
+        # Set pad token
+        if tokenizer.pad_token is None:
+            tokenizer.pad_token = tokenizer.eos_token
+        
+        logger.info("Model loaded successfully!")
         
     except Exception as e:
         logger.error(f"Failed to load model: {str(e)}")
@@ -94,6 +99,7 @@ class ComponentResponse(BaseModel):
     fields: List[Field]
     success: bool = True
     message: str = "Component generated successfully"
+    cache_info: Optional[Dict[str, Any]] = None
 
 def cleanup_memory():
     """Clean up memory after generation"""
@@ -158,10 +164,11 @@ async def root():
     """Root endpoint"""
     return {
         "message": "CCC AI Server is running!",
-        "model": "TinyLlama-1.1B-Chat (Free Local Model)",
+        "model": "DialoGPT-small (Fast & Optimized)",
         "endpoints": {
             "health": "/health",
-            "generate": "/generate-component"
+            "generate": "/generate-component",
+            "cache-stats": "/cache-stats"
         }
     }
 
@@ -171,13 +178,20 @@ async def health_check():
     return {
         "status": "healthy",
         "model_loaded": model is not None,
-        "model_name": "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
-        "cost": "Free - No API keys required"
+        "model_name": "microsoft/DialoGPT-small",
+        "cost": "Free - No API keys required",
+        "performance": "Optimized for speed",
+        "cache_enabled": True
     }
+
+@app.get("/cache-stats")
+async def get_cache_stats():
+    """Get cache statistics"""
+    return cache.get_stats()
 
 @app.post("/generate-component", response_model=ComponentResponse)
 async def generate_component(request: ComponentRequest):
-    """Generate a component based on user prompt"""
+    """Generate a component based on user prompt with intelligent caching"""
     
     if model is None or tokenizer is None:
         raise HTTPException(status_code=503, detail="AI model not loaded")
@@ -185,25 +199,45 @@ async def generate_component(request: ComponentRequest):
     try:
         logger.info(f"Generating component for prompt: {request.prompt}")
         
-        # Create a smarter prompt that only uses available field types
-        system_prompt = f"""<|system|>
-You are a WordPress component generator. Generate a JSON response for this component request.
+        # Check cache first
+        cached_result = cache.get_cached_result(request.prompt)
+        
+        if cached_result:
+            # Cache hit - return cached result
+            logger.info(f"Returning cached result for: {request.prompt}")
+            
+            # Convert cached data back to Pydantic models
+            component = Component(**cached_result["component"])
+            fields = [Field(**field) for field in cached_result["fields"]]
+            
+            return ComponentResponse(
+                component=component,
+                fields=fields,
+                success=True,
+                message="Component generated successfully (from cache)",
+                cache_info={
+                    "cache_hit": True,
+                    "original_prompt": cached_result["original_prompt"],
+                    "similarity_score": "high"
+                }
+            )
+        
+        # Cache miss - generate new component
+        logger.info(f"Generating new component for: {request.prompt}")
+        
+        # Enhance prompt with learned preferences
+        component_type = cache.extract_component_type(request.prompt)
+        preferences = cache.extract_preferences(request.prompt)
+        enhanced_prompt = cache.enhance_prompt_with_preferences(request.prompt, component_type, preferences)
+        
+        # Create a much shorter, optimized prompt
+        system_prompt = f"""Generate WordPress component JSON for: {enhanced_prompt}
 
-ONLY use these available field types: {', '.join(request.available_fields)}
+Available fields: {', '.join(request.available_fields)}
 
-Field type guidelines:
-- "text": Use for single line text (names, titles, prices, numbers, emails, URLs, etc.)
-- "textarea": Use for multi-line text (descriptions, content, lists, etc.)
-- "image": Use for image uploads
-- "video": Use for video uploads or video URLs
-- "color": Use for color pickers
-- "select": Use for dropdown choices (plan types, categories, etc.)
-- "checkbox": Use for true/false options
-- "radio": Use for single choice from multiple options
-- "wysiwyg": Use for rich text content with formatting
-- "repeater": Use for repeatable field groups (features list, testimonials, etc.)
+Use "text" for single line (names, prices, emails). Use "textarea" for multi-line. Use "select" for choices. Use "image" for images. Use "video" for videos. Use "color" for colors. Use "checkbox" for true/false. Use "radio" for single choice. Use "wysiwyg" for rich text. Use "repeater" for lists.
 
-Return ONLY valid JSON in this exact format:
+Return JSON:
 {{
   "component": {{
     "name": "Component Name",
@@ -219,36 +253,28 @@ Return ONLY valid JSON in this exact format:
       "placeholder": "Placeholder"
     }}
   ]
-}}
+}}"""
 
-IMPORTANT: Only use the field types listed above. For numbers, prices, emails, etc. use "text" type.
-</s>
-<|user|>
-{request.prompt}
-</s>
-<|assistant|>
-{{
-  "component": {{
-    "name": """
-
-        # Generate response
-        inputs = tokenizer(system_prompt, return_tensors="pt", max_length=256, truncation=True)
+        # Generate response with optimized parameters
+        inputs = tokenizer(system_prompt, return_tensors="pt", max_length=128, truncation=True)
         
         with torch.no_grad():
             outputs = model.generate(
                 **inputs,
-                max_length=800,
-                temperature=0.3,
+                max_length=400,  # Much shorter for faster generation
+                temperature=0.5,
                 do_sample=True,
                 pad_token_id=tokenizer.eos_token_id,
                 num_return_sequences=1,
-                eos_token_id=tokenizer.eos_token_id
+                eos_token_id=tokenizer.eos_token_id,
+                early_stopping=True,  # Stop early for speed
+                no_repeat_ngram_size=2  # Prevent repetition
             )
         
         response_text = tokenizer.decode(outputs[0], skip_special_tokens=True)
         logger.info(f"Raw AI response: {response_text}")
         
-        # Clean up memory
+        # Clean up memory immediately
         cleanup_memory()
         
         # Extract JSON from response
@@ -318,13 +344,22 @@ IMPORTANT: Only use the field types listed above. For numbers, prices, emails, e
             )
             fields.append(field)
         
+        # Cache the result for future use
+        cache.cache_result(request.prompt, component.dict(), [field.dict() for field in fields])
+        
         logger.info(f"Successfully generated component: {component.name}")
         
         return ComponentResponse(
             component=component,
             fields=fields,
             success=True,
-            message="Component generated successfully"
+            message="Component generated successfully",
+            cache_info={
+                "cache_hit": False,
+                "cached_for_future": True,
+                "component_type": component_type,
+                "preferences_learned": preferences
+            }
         )
         
     except Exception as e:
